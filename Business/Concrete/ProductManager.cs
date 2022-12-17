@@ -1,9 +1,17 @@
 ﻿using Business.Abstract;
+using Business.BusinessAspects.Autofac;
+using Business.CCS;
 using Business.Constants;
+using Business.ValidationRules.FluentValidation;
+using Core.Aspects.Autofac.Caching;
+using Core.Aspects.Autofac.Validation;
+using Core.CrossCuttingConcerns.Validation;
+using Core.Utilities.Business;
 using Core.Utilities.Results;
 using DataAccess.Abstract;
 using Entities.Concrete;
 using Entities.DTOs;
+using FluentValidation;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -15,23 +23,70 @@ namespace Business.Concrete
     public class ProductManager : IProductService
     {
         IProductDal _productDal;
+        
 
-        public ProductManager(IProductDal productDal)
+        ICategoryService _categoryService;
+
+        //bir entityManager kendisi dışında başka bir Dal'ı enjekte edemez.
+        public ProductManager(IProductDal productDal, ICategoryService categoryService)
         {
             _productDal = productDal;
-        }
+            
 
+            _categoryService = categoryService;
+        }
+        //  , hashing : kullanıcı parolaları hashlersen şifreyi daha farklı şekilde gizli olarak bellekte tutar
+        //encryption : 
+
+        //şifreleme algoritması : MD5 , SHA1
+        // kullanıcının girdiği parolayı güçlendirmer : salting
+
+        //claim : product.add , admin (anahtarlar)
+
+        [SecuredOperation("product.add,admin")]
+        [ValidationAspect(typeof(ProductValidator))]
         public IResult Add(Product product)
         {
-            if (product.ProductName.Length<2)
-            {
-                return new ErrorResult(Messages.ProductNameInvalid);
-            }
-            _productDal.Add(product);
+           
+                //business code
+                //validation
+                IResult result = BusinessRules.Run(CheckIfProductNameExists(product.ProductName),
+                    CheckIfProductCountOfCategoryCorrect(product.CategoryId),
+                    CheckIfCategoryLimitExceded());
+
+                if (result != null)
+                {
+                    return result;
+                }
+                _productDal.Add(product);
 
                 return new SuccessResult(Messages.ProductAdded);
+
+
+                if (CheckIfProductCountOfCategoryCorrect(product.CategoryId).Success)
+                {
+                    if (CheckIfProductNameExists(product.ProductName).Success)
+                    {
+                        _productDal.Add(product);
+
+                        return new SuccessResult(Messages.ProductAdded);
+                    }
+                   
+                }
+                return new ErrorResult();
+
+                
+           
+           
+
+            return new ErrorResult();
+           
         }
 
+        //[CacheAspect] .NetCore deki yöntem: InMemoryCache ,
+        // key , value : cache lemek istediğimiz datayı tutuyor
+        // key : cache e verdiğimiz isim
+        [CacheAspect]
         public IDataResult<List<Product>> GetAll()
         {
             if (DateTime.Now.Hour==18)
@@ -46,6 +101,7 @@ namespace Business.Concrete
             return new SuccessDataResult<List<Product>>( _productDal.GetAll(p => p.CategoryId == id));
         }
 
+        [CacheAspect]
         public IDataResult<Product> GetById(int productId)
         {
             return new SuccessDataResult<Product>( _productDal.Get(p => p.ProductId == productId));
@@ -59,6 +115,59 @@ namespace Business.Concrete
         public IDataResult<List<ProductDetailDto>> GetProductDetailDtos()
         {
             return new SuccessDataResult<List<ProductDetailDto>>(_productDal.GetProductDetails());
+        }
+
+        [ValidationAspect(typeof(ProductValidator))]
+        [CacheRemoveAspect("IProductService.Get")]
+        public IResult Update(Product product)
+        {
+            var result = _productDal.GetAll(p => p.CategoryId == product.CategoryId).Count;
+            if (result >= 10)
+            {
+                return new ErrorResult(Messages.ProductofCountOfError);
+            }
+
+            throw new NotImplementedException();
+        }
+
+        private IResult CheckIfProductCountOfCategoryCorrect(int categoryId)
+        {
+            var result = _productDal.GetAll(p => p.CategoryId == categoryId).Count;
+            if (result >= 10)
+            {
+                return new ErrorResult(Messages.ProductofCountOfError);
+            }
+            return new SuccessResult();
+        }
+        private IResult CheckIfProductNameExists(string productName)
+        {
+            var result = _productDal.GetAll(p => p.ProductName == productName).Any();
+            if (result) //result==true
+            {
+                return new ErrorResult(Messages.ProductNameAlreadyExists);
+            }
+            return new SuccessResult();
+        }
+        private IResult CheckIfCategoryLimitExceded()
+        {
+            var result = _categoryService.GetAll();
+            if (result.Data.Count>15)
+            {
+                return new ErrorResult(Messages.CategoryLimitExceded);
+            }
+            return new SuccessResult();
+        }
+
+        //[TransactionScopAspect]
+        public IResult AddTransactionalTest(Product product)
+        {
+            Add(product);
+            if (product.UnitPrice<1)
+            {
+                throw new Exception("");
+            }
+            Add(product);
+            return null;
         }
     }
 }
